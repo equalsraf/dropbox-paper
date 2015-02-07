@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""dropbox-paper
+
+Usage:
+    dropbox-paper init <dstpath>
+    dropbox-paper status
+    dropbox-paper push
+"""
+
+from sys import exit
+from os import path, chdir, getcwd, listdir, environ, access, X_OK
+from locale import getpreferredencoding
+import subprocess
+from docopt import docopt
+try:
+    from termcolor import cprint
+except ImportError:
+    def cprint(text, *unused):
+        print(text)
+
+DEPENDENCIES = ['git', 'dropbox']
+def which(program):
+    """Find program in PATH."""
+    for pathval in environ["PATH"].split(path.pathsep):
+        exe_file = path.join(pathval.strip('"'), program)
+        if path.isfile(exe_file) and access(exe_file, X_OK):
+            return exe_file
+    return None
+
+def check_env():
+    """Check if we can run."""
+    for dep in DEPENDENCIES:
+        if not which(dep):
+            cprint('Cannot find "%s" in your system' % dep, 'red')
+            exit(-1)
+
+def call(cmd, exitcode=0, silent=False, errmsg=''):
+    """Execute command, exit if it fails."""
+    if silent:
+        stdout = subprocess.DEVNULL
+    else:
+        stdout = None
+
+    ret = subprocess.call(cmd, stdout=stdout)
+    if ret != exitcode:
+        cprint(errmsg, 'red')
+        exit(-1)
+
+def find_local_repo_path():
+    """Find top level path for this git repo."""
+    next_path = path.abspath('.')
+    while True:
+        if path.isdir(path.join(next_path, '.git')):
+            return next_path
+        if path.ismount(next_path):
+            # We have reached the toplevel or a mount point, stop
+            break
+        next_path = path.abspath(path.join(next_path, path.pardir))
+
+    return None
+
+def get_dropbox_path():
+    """Get remote url from remote dropbox-paper in this repository"""
+    try:
+        url = subprocess.check_output(['git', 'config', '-z', '--get', 'remote.dropbox-paper.url'])
+    except subprocess.CalledProcessError:
+        return ''
+    url = url.decode(getpreferredencoding()).strip('\0')
+    return url
+
+def status():
+    """Show status for dropbox and workcopy"""
+    remote_path = get_dropbox_path()
+    if not remote_path:
+        cprint('No dropbox-paper remote was found', 'red')
+        exit(-1)
+    call(['dropbox', 'filestatus', remote_path])
+    curpath = getcwd()
+    chdir(remote_path)
+    call(['git', 'status'])
+    chdir(curpath)
+
+def get_dropbox_status():
+    """git-status on the dropbox repo"""
+    remote_path = get_dropbox_path()
+    curpath = getcwd()
+    chdir(remote_path)
+    try:
+        repo_status = subprocess.check_output(['git', 'status', '-z', '--porcelain', '--untracked-files=no'])
+    except subprocess.CalledProcessError:
+        return ''
+    repo_status = repo_status.decode(getpreferredencoding()).strip('\0')
+    chdir(curpath)
+    return repo_status
+
+def push():
+    """Push our changes to dropbox, and if possible merge the work copy."""
+    remote_path = get_dropbox_path()
+    if not remote_path:
+        cprint('No dropbox-paper remote was found', 'red')
+        exit(-1)
+    cprint('Pushing to %s' % remote_path)
+    call(['git', 'push', 'dropbox-paper', 'master'])
+    if get_dropbox_status():
+        print('There are changes in the workcopy, leaving it alone', 'magenta')
+        exit(0)
+    curpath = getcwd()
+    chdir(remote_path)
+    call(['git', 'merge', '--ff-only', 'master'])
+    chdir(curpath)
+    cprint('Done!', 'cyan')
+
+def init(repo_path, args):
+    """Init repo clone in new path"""
+    dst = args['<dstpath>']
+
+    # Fail if there is already a remote dropbox-paper
+    call(['git', 'config', '--get', 'remote.dropbox-paper.url'], exitcode=1, silent=True,
+        errmsg='There is already a remote called dropbox-paper')
+
+    # Fail if there is no master branch
+    branches = listdir(path.join(repo_path, '.git', 'refs', 'heads'))
+    if not 'master' in branches:
+        cprint('No master branch? What branch should we use then?', 'red')
+        exit(-1)
+
+    call(['git', 'clone', repo_path, dst])
+    call(['git', 'remote', 'add', 'dropbox-paper', dst])
+    call(['git', 'fetch', 'dropbox-paper'])
+
+    curpath = getcwd()
+    chdir(dst)
+    call(['git', 'checkout', '-b', 'workcopy', 'master'])
+    chdir(curpath)
+
+def main():
+    args = docopt(__doc__, version='dropbox-paper 0.1')
+    repo_path = find_local_repo_path()
+    if not repo_path:
+        cprint('Not in a git repository!', 'red')
+        exit(-1)
+
+    if args['init']:
+        init(repo_path, args)
+    elif args['status']:
+        status()
+    elif args['push']:
+        push()
+
+if __name__ == '__main__':
+    check_env()
+    main()
+
