@@ -109,6 +109,7 @@ def push():
     call(['git', 'merge', '--ff-only', 'master'])
     chdir(curpath)
     cprint('Done!', 'cyan')
+    call(['dropbox', 'status'])
 
 def init(repo_path, args):
     """Init repo clone in new path"""
